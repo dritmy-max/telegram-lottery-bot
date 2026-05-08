@@ -1,135 +1,350 @@
 import os
 import logging
-import openpyxl
+import sqlite3
+import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Настройка логирования (чтобы видеть, что происходит)
+# --- Настройка логирования ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ВАЖНО: Вставьте ваш токен
+# --- Токен бота ---
 TOKEN = "8718532267:AAEq7afHk_Nuqjy3KeqI52KdzanQLQ1_iEI"
-EXCEL_FILE = "lottery.xlsx"
 
-# --- Работа с Excel ---
-def init_excel():
-    """Создает файл Excel, если его нет"""
-    if not os.path.exists(EXCEL_FILE):
-        wb = openpyxl.Workbook()
-        # Лист с номерами
-        sheet = wb.active
-        sheet.title = "Номера"
-        sheet.append(["Номер", "Свободен", "Владелец (ID)"])
-        for i in range(1, 401):
-            sheet.append([i, "✅", ""])
-        # Лист с участниками
-        ws2 = wb.create_sheet("Участники")
-        ws2.append(["Telegram ID", "Телефон", "Купленные номера"])
-        wb.save(EXCEL_FILE)
-        logger.info("Excel файл создан: %s", EXCEL_FILE)
-    else:
-        logger.info("Excel файл уже существует")
+# --- База данных SQLite ---
+DB_FILE = "lottery.db"
 
-def get_available_numbers():
-    """Возвращает список свободных номерков"""
+def init_db():
+    """Создает таблицы, если их нет"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    # Таблица розыгрышей
+    c.execute('''CREATE TABLE IF NOT EXISTS lotteries
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  price INTEGER NOT NULL,
+                  total_tickets INTEGER NOT NULL,
+                  sold_tickets INTEGER DEFAULT 0,
+                  status TEXT DEFAULT 'active')''')
+    # Таблица билетов
+    c.execute('''CREATE TABLE IF NOT EXISTS tickets
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  lottery_id INTEGER NOT NULL,
+                  number INTEGER NOT NULL,
+                  user_id INTEGER NOT NULL,
+                  status TEXT DEFAULT 'free',
+                  FOREIGN KEY(lottery_id) REFERENCES lotteries(id))''')
+    # Таблица пользователей
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (user_id INTEGER PRIMARY KEY,
+                  phone TEXT)''')
+    conn.commit()
+    conn.close()
+    logger.info("База данных инициализирована")
+
+def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверяет, является ли пользователь администратором группы"""
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     try:
-        wb = openpyxl.load_workbook(EXCEL_FILE)
-        sheet = wb["Номера"]
-        available = []
-        for row in sheet.iter_rows(min_row=2, values_only=True):
-            if row[1] == "✅":
-                available.append(row[0])
-        wb.close()
-        return available
-    except Exception as e:
-        logger.error("Ошибка при чтении Excel: %s", e)
-        return []
-
-def buy_numbers(user_id, phone, numbers):
-    """Покупает номера, записывает в Excel"""
-    try:
-        wb = openpyxl.load_workbook(EXCEL_FILE)
-        sheet = wb["Номера"]
-        # Помечаем купленные
-        for row in sheet.iter_rows(min_row=2, max_row=401, values_only=False):
-            if row[0].value in numbers and row[1].value == "✅":
-                row[1].value = "❌"
-                row[2].value = str(user_id)
-        # Записываем участника
-        ws2 = wb["Участники"]
-        ws2.append([str(user_id), phone, ", ".join([str(n) for n in numbers])])
-        wb.save(EXCEL_FILE)
-        logger.info("Куплены номера: %s для user %s", numbers, user_id)
-        return True
-    except Exception as e:
-        logger.error("Ошибка при покупке: %s", e)
+        chat_member = context.bot.get_chat_member(chat_id, user_id)
+        return chat_member.status in ['administrator', 'creator']
+    except:
         return False
 
 # --- Команды бота ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎫 Добро пожаловать в лотерею!\n"
-        "Команды:\n"
-        "/buy - купить номера\n"
-        "/available - показать свободные номера\n"
-        "/my_tickets - мои номера\n"
-        "/draw - розыгрыш (только для админа)"
-    )
-
-async def available(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    free = get_available_numbers()
-    if not free:
-        await update.message.reply_text("🎟 Все номера распроданы!")
-        return
-    text = "🎫 Свободные номера:\n"
-    for i in range(0, len(free), 20):
-        text += ", ".join([str(n) for n in free[i:i+20]]) + "\n"
-    await update.message.reply_text(text)
-
-async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    free = get_available_numbers()
-    if not free:
-        await update.message.reply_text("🤷 Все номера проданы!")
-        return
-    keyboard = []
-    row = []
-    for num in free[:50]:
-        row.append(InlineKeyboardButton(str(num), callback_data=f"buy_{num}"))
-        if len(row) == 10:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
+    """Главное меню"""
+    keyboard = [
+        [InlineKeyboardButton("🎫 Участвовать", callback_data='participate')],
+        [InlineKeyboardButton("👤 Мои билеты", callback_data='my_tickets')]
+    ]
+    if is_admin(update, context):
+        keyboard.append([InlineKeyboardButton("⚙️ Админ панель", callback_data='admin_panel')])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите номер для покупки:", reply_markup=reply_markup)
+    await update.message.reply_text("Добро пожаловать в мясную лотерею!\nВыберите действие:", reply_markup=reply_markup)
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий на кнопки"""
     query = update.callback_query
     await query.answer()
     data = query.data
-    if data.startswith("buy_"):
-        num = int(data.split("_")[1])
-        user_id = query.from_user.id
-        # В реальном боте здесь надо запросить телефон
-        success = buy_numbers(user_id, "не указан", [num])
-        if success:
-            await query.edit_message_text(f"✅ Номер {num} куплен!\nСпасибо за участие!")
+
+    # --- Участвовать ---
+    if data == 'participate':
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, name, price, total_tickets, sold_tickets FROM lotteries WHERE status='active'")
+        lotteries = c.fetchall()
+        conn.close()
+        if not lotteries:
+            await query.edit_message_text("Сейчас нет активных розыгрышей. Загляните позже!")
+            return
+        keyboard = []
+        for l in lotteries:
+            remaining = l[3] - l[4]  # total - sold
+            keyboard.append([InlineKeyboardButton(f"{l[1]} (осталось {remaining}/{l[3]}, {l[2]}₽/номер)", callback_data=f'select_lottery_{l[0]}')])
+        keyboard.append([InlineKeyboardButton("← Назад", callback_data='back_to_main')])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Выберите розыгрыш:", reply_markup=reply_markup)
+
+    # --- Выбор розыгрыша ---
+    elif data.startswith('select_lottery_'):
+        lottery_id = int(data.split('_')[2])
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT name, price FROM lotteries WHERE id=?", (lottery_id,))
+        lottery = c.fetchone()
+        c.execute("SELECT number FROM tickets WHERE lottery_id=? AND status='free'", (lottery_id,))
+        free = [row[0] for row in c.fetchall()]
+        conn.close()
+        if not free:
+            await query.edit_message_text("😔 Все номера в этом розыгрыше проданы!")
+            return
+        # Показываем первые 50 свободных номеров кнопками
+        keyboard = []
+        row = []
+        for num in free[:50]:
+            row.append(InlineKeyboardButton(str(num), callback_data=f'select_ticket_{lottery_id}_{num}'))
+            if len(row) == 10:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("✓ Подтвердить выбор", callback_data=f'confirm_tickets_{lottery_id}')])
+        keyboard.append([InlineKeyboardButton("← Назад", callback_data='participate')])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"🎫 Розыгрыш: {lottery[0]}\nЦена номерка: {lottery[1]}₽\nВыберите номера (нажимайте, чтобы выбрать):", reply_markup=reply_markup)
+
+    # --- Выбор билета (временное хранение в context.user_data) ---
+    elif data.startswith('select_ticket_'):
+        parts = data.split('_')
+        lottery_id = int(parts[2])
+        number = int(parts[3])
+        # Сохраняем выбранные номера в user_data
+        if 'selected_tickets' not in context.user_data:
+            context.user_data['selected_tickets'] = []
+        if number not in context.user_data['selected_tickets']:
+            context.user_data['selected_tickets'].append(number)
+            await query.edit_message_text(f"✅ Номер {number} добавлен.\nВсего выбрано: {len(context.user_data['selected_tickets'])}")
         else:
-            await query.edit_message_text("❌ Ошибка при покупке. Попробуйте позже.")
+            context.user_data['selected_tickets'].remove(number)
+            await query.edit_message_text(f"❌ Номер {number} убран.\nВсего выбрано: {len(context.user_data['selected_tickets'])}")
+
+    # --- Подтверждение покупки ---
+    elif data.startswith('confirm_tickets_'):
+        lottery_id = int(data.split('_')[2])
+        if 'selected_tickets' not in context.user_data or not context.user_data['selected_tickets']:
+            await query.edit_message_text("Вы не выбрали ни одного номера!")
+            return
+        numbers = context.user_data['selected_tickets']
+        user_id = update.effective_user.id
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        # Проверяем, что все номера еще свободны
+        placeholders = ','.join(['?'] * len(numbers))
+        c.execute(f"SELECT number FROM tickets WHERE lottery_id=? AND number IN ({placeholders}) AND status='free'", (lottery_id, *numbers))
+        free_numbers = [row[0] for row in c.fetchall()]
+        if len(free_numbers) != len(numbers):
+            occupied = [n for n in numbers if n not in free_numbers]
+            await query.edit_message_text(f"❌ Номера {occupied} уже заняты! Выберите другие.")
+            conn.close()
+            return
+        # Бронируем номера
+        for num in numbers:
+            c.execute("UPDATE tickets SET status='sold', user_id=? WHERE lottery_id=? AND number=?", (user_id, lottery_id, num))
+        # Обновляем sold_tickets
+        c.execute("UPDATE lotteries SET sold_tickets = sold_tickets + ? WHERE id=?", (len(numbers), lottery_id))
+        conn.commit()
+        conn.close()
+        # Очищаем выбор
+        context.user_data['selected_tickets'] = []
+        await query.edit_message_text(f"✅ Вы успешно купили номера: {numbers}\nСпасибо за участие!")
+
+    # --- Админ панель ---
+    elif data == 'admin_panel':
+        if not is_admin(update, context):
+            await query.edit_message_text("⛔ У вас нет прав администратора.")
+            return
+        keyboard = [
+            [InlineKeyboardButton("➕ Создать розыгрыш", callback_data='create_lottery')],
+            [InlineKeyboardButton("📋 Мои розыгрыши", callback_data='my_lotteries')],
+            [InlineKeyboardButton("← Назад", callback_data='back_to_main')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("⚙️ Админ панель:", reply_markup=reply_markup)
+
+    # --- Создать розыгрыш ---
+    elif data == 'create_lottery':
+        if not is_admin(update, context):
+            await query.edit_message_text("⛔ У вас нет прав администратора.")
+            return
+        await query.edit_message_text("Введите название розыгрыша:")
+        context.user_data['admin_action'] = 'create_lottery_name'
+
+    # --- Мои розыгрыши ---
+    elif data == 'my_lotteries':
+        if not is_admin(update, context):
+            await query.edit_message_text("⛔ У вас нет прав администратора.")
+            return
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, name, price, total_tickets, sold_tickets, status FROM lotteries")
+        lotteries = c.fetchall()
+        conn.close()
+        if not lotteries:
+            await query.edit_message_text("У вас нет созданных розыгрышей.")
+            return
+        keyboard = []
+        for l in lotteries:
+            remaining = l[3] - l[4]
+            status_emoji = "🟢" if l[5] == 'active' else "🔴"
+            keyboard.append([InlineKeyboardButton(f"{status_emoji} {l[1]} (осталось {remaining}/{l[3]}, {l[2]}₽/номер)", callback_data=f'lott_info_{l[0]}')])
+        keyboard.append([InlineKeyboardButton("← Назад", callback_data='admin_panel')])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("📋 Ваши розыгрыши:", reply_markup=reply_markup)
+
+    # --- Информация о розыгрыше (для админа) ---
+    elif data.startswith('lott_info_'):
+        lottery_id = int(data.split('_')[2])
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT name, price, total_tickets, sold_tickets, status FROM lotteries WHERE id=?", (lottery_id,))
+        lottery = c.fetchone()
+        conn.close()
+        remaining = lottery[2] - lottery[3]
+        keyboard = []
+        if lottery[4] == 'active':
+            keyboard.append([InlineKeyboardButton("🎲 Провести розыгрыш", callback_data=f'draw_lottery_{lottery_id}')])
+        keyboard.append([InlineKeyboardButton("← Назад", callback_data='my_lotteries')])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            f"📊 Розыгрыш: {lottery[0]}\n"
+            f"Цена номерка: {lottery[1]}₽\n"
+            f"Всего номерков: {lottery[2]}\n"
+            f"Продано: {lottery[3]}\n"
+            f"Осталось: {remaining}\n"
+            f"Статус: {'Активен' if lottery[4] == 'active' else 'Завершен'}",
+            reply_markup=reply_markup
+        )
+
+    # --- Провести розыгрыш ---
+    elif data.startswith('draw_lottery_'):
+        lottery_id = int(data.split('_')[2])
+        if not is_admin(update, context):
+            await query.edit_message_text("⛔ У вас нет прав администратора.")
+            return
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT name FROM lotteries WHERE id=?", (lottery_id,))
+        lottery_name = c.fetchone()[0]
+        c.execute("SELECT number, user_id FROM tickets WHERE lottery_id=? AND status='sold'", (lottery_id,))
+        sold = c.fetchall()
+        if not sold:
+            await query.edit_message_text("😔 Нет проданных номерков в этом розыгрыше.")
+            conn.close()
+            return
+        # Выбираем случайный номер
+        winner = random.choice(sold)
+        winning_number = winner[0]
+        winner_id = winner[1]
+        # Помечаем розыгрыш как завершенный
+        c.execute("UPDATE lotteries SET status='completed' WHERE id=?", (lottery_id,))
+        conn.commit()
+        conn.close()
+        # Уведомление в группу
+        try:
+            await context.bot.send_message(
+                update.effective_chat.id,
+                f"🎉 ПОБЕДИТЕЛЬ РОЗЫГРЫША '{lottery_name}'!\n"
+                f"Номер: {winning_number}\n"
+                f"Поздравляем пользователя! (ID: {winner_id})"
+            )
+        except:
+            pass
+        await query.edit_message_text(f"✅ Розыгрыш '{lottery_name}' проведен!\nПобедитель: номер {winning_number} (ID: {winner_id})")
+
+    # --- Назад ---
+    elif data == 'back_to_main':
+        await start(update, context)
+
+    # --- Мои билеты ---
+    elif data == 'my_tickets':
+        user_id = update.effective_user.id
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT lottery_id, number FROM tickets WHERE user_id=? AND status='sold'", (user_id,))
+        tickets = c.fetchall()
+        conn.close()
+        if not tickets:
+            await query.edit_message_text("У вас пока нет билетов.")
+            return
+        text = "🎫 Ваши билеты:\n"
+        for t in tickets:
+            text += f"Розыгрыш ID {t[0]}, номер {t[1]}\n"
+        await query.edit_message_text(text)
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений (для создания розыгрыша)"""
+    if 'admin_action' in context.user_data:
+        action = context.user_data['admin_action']
+        text = update.message.text
+        if action == 'create_lottery_name':
+            context.user_data['new_lottery_name'] = text
+            context.user_data['admin_action'] = 'create_lottery_price'
+            await update.message.reply_text("Введите цену одного номерка (в рублях):")
+        elif action == 'create_lottery_price':
+            try:
+                price = int(text)
+                if price <= 0:
+                    raise ValueError
+                context.user_data['new_lottery_price'] = price
+                context.user_data['admin_action'] = 'create_lottery_total'
+                await update.message.reply_text("Введите общее количество номерков:")
+            except:
+                await update.message.reply_text("Пожалуйста, введите целое положительное число.")
+        elif action == 'create_lottery_total':
+            try:
+                total = int(text)
+                if total <= 0:
+                    raise ValueError
+                name = context.user_data['new_lottery_name']
+                price = context.user_data['new_lottery_price']
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute("INSERT INTO lotteries (name, price, total_tickets) VALUES (?, ?, ?)", (name, price, total))
+                lottery_id = c.lastrowid
+                # Генерируем номера
+                for i in range(1, total+1):
+                    c.execute("INSERT INTO tickets (lottery_id, number, user_id, status) VALUES (?, ?, ?, 'free')", (lottery_id, i, 0))
+                conn.commit()
+                conn.close()
+                await update.message.reply_text(f"✅ Розыгрыш '{name}' создан!\nЦена: {price}₽\nВсего номерков: {total}")
+                # Очищаем состояние
+                del context.user_data['admin_action']
+                del context.user_data['new_lottery_name']
+                del context.user_data['new_lottery_price']
+            except:
+                await update.message.reply_text("Пожалуйста, введите целое положительное число.")
+    else:
+        await update.message.reply_text("Используйте кнопки меню. Нажмите /start")
+
+async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Извините, я не понимаю эту команду. Нажмите /start")
 
 # --- Запуск бота ---
 def main():
-    logger.info("Запуск бота...")
-    init_excel()
+    init_db()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("available", available))
-    app.add_handler(CommandHandler("buy", buy_handler))
-    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))
     logger.info("Бот запущен и готов к работе")
     app.run_polling()
 
