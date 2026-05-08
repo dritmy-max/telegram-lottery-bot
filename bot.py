@@ -1,4 +1,4 @@
-import os
+chat_member = context.bot.get_chat_member(chat_id, user_id)import os
 import logging
 import sqlite3
 import random
@@ -45,12 +45,13 @@ def init_db():
 
 def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Проверяет, является ли пользователь администратором группы"""
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
     try:
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
         chat_member = context.bot.get_chat_member(chat_id, user_id)
         return chat_member.status in ['administrator', 'creator']
-    except:
+    except Exception as e:
+        print(f"Ошибка проверки админа: {e}")
         return False
 
 # --- Команды бота ---
