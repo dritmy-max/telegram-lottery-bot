@@ -32,6 +32,7 @@ TOKEN = "8718532267:AAEq7afHk_Nuqjy3KeqI52KdzanQLQ1_iEI"
 DB_FILE = "lottery.db"
 
 def init_db():
+    """Создает таблицы, если их нет"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS lotteries
@@ -56,6 +57,7 @@ def init_db():
     logger.info("База данных инициализирована")
 
 def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверяет, является ли пользователь администратором группы"""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     try:
@@ -64,7 +66,10 @@ def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     except:
         return False
 
+# --- Команды бота ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Главное меню"""
     keyboard = [
         [InlineKeyboardButton("🎫 Участвовать", callback_data='participate')],
         [InlineKeyboardButton("👤 Мои билеты", callback_data='my_tickets')]
@@ -75,6 +80,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Добро пожаловать в мясную лотерею!\nВыберите действие:", reply_markup=reply_markup)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий на кнопки"""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -274,6 +280,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений (только для создания розыгрыша)"""
+    if not update.message:
+        return
     if 'admin_action' in context.user_data:
         action = context.user_data['admin_action']
         text = update.message.text
@@ -313,24 +322,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 await update.message.reply_text("Пожалуйста, введите целое положительное число.")
     else:
-        await update.message.reply_text("Используйте кнопки меню. Нажмите /start")
+        if update.message:
+            await update.message.reply_text("Используйте кнопки меню. Нажмите /start")
 
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Извините, я не понимаю эту команду. Нажмите /start")
-
-# --- Запуск бота с Flask для Render ---
+# --- Запуск бота ---
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+    # Обработчик неизвестных команд отсутствует, чтобы не вызывать ошибок
     logger.info("Бот запущен и готов к работе")
-    
-    # Запускаем веб-сервер в отдельном потоке
+
+    # Запускаем веб-сервер в отдельном потоке (для Render)
     threading.Thread(target=run_web, daemon=True).start()
-    
+
     app.run_polling()
 
 if __name__ == "__main__":
