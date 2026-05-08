@@ -22,7 +22,6 @@ def init_db():
     """Создает таблицы, если их нет"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Таблица розыгрышей
     c.execute('''CREATE TABLE IF NOT EXISTS lotteries
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT NOT NULL,
@@ -30,7 +29,6 @@ def init_db():
                   total_tickets INTEGER NOT NULL,
                   sold_tickets INTEGER DEFAULT 0,
                   status TEXT DEFAULT 'active')''')
-    # Таблица билетов
     c.execute('''CREATE TABLE IF NOT EXISTS tickets
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   lottery_id INTEGER NOT NULL,
@@ -38,7 +36,6 @@ def init_db():
                   user_id INTEGER NOT NULL,
                   status TEXT DEFAULT 'free',
                   FOREIGN KEY(lottery_id) REFERENCES lotteries(id))''')
-    # Таблица пользователей
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (user_id INTEGER PRIMARY KEY,
                   phone TEXT)''')
@@ -87,7 +84,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         keyboard = []
         for l in lotteries:
-            remaining = l[3] - l[4]  # total - sold
+            remaining = l[3] - l[4]
             keyboard.append([InlineKeyboardButton(f"{l[1]} (осталось {remaining}/{l[3]}, {l[2]}₽/номер)", callback_data=f'select_lottery_{l[0]}')])
         keyboard.append([InlineKeyboardButton("← Назад", callback_data='back_to_main')])
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -106,7 +103,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not free:
             await query.edit_message_text("😔 Все номера в этом розыгрыше проданы!")
             return
-        # Показываем первые 50 свободных номеров кнопками
         keyboard = []
         row = []
         for num in free[:50]:
@@ -126,7 +122,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split('_')
         lottery_id = int(parts[2])
         number = int(parts[3])
-        # Сохраняем выбранные номера в user_data
         if 'selected_tickets' not in context.user_data:
             context.user_data['selected_tickets'] = []
         if number not in context.user_data['selected_tickets']:
@@ -146,7 +141,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        # Проверяем, что все номера еще свободны
         placeholders = ','.join(['?'] * len(numbers))
         c.execute(f"SELECT number FROM tickets WHERE lottery_id=? AND number IN ({placeholders}) AND status='free'", (lottery_id, *numbers))
         free_numbers = [row[0] for row in c.fetchall()]
@@ -155,14 +149,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Номера {occupied} уже заняты! Выберите другие.")
             conn.close()
             return
-        # Бронируем номера
         for num in numbers:
             c.execute("UPDATE tickets SET status='sold', user_id=? WHERE lottery_id=? AND number=?", (user_id, lottery_id, num))
-        # Обновляем sold_tickets
         c.execute("UPDATE lotteries SET sold_tickets = sold_tickets + ? WHERE id=?", (len(numbers), lottery_id))
         conn.commit()
         conn.close()
-        # Очищаем выбор
         context.user_data['selected_tickets'] = []
         await query.edit_message_text(f"✅ Вы успешно купили номера: {numbers}\nСпасибо за участие!")
 
@@ -249,15 +240,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("😔 Нет проданных номерков в этом розыгрыше.")
             conn.close()
             return
-        # Выбираем случайный номер
         winner = random.choice(sold)
         winning_number = winner[0]
         winner_id = winner[1]
-        # Помечаем розыгрыш как завершенный
         c.execute("UPDATE lotteries SET status='completed' WHERE id=?", (lottery_id,))
         conn.commit()
         conn.close()
-        # Уведомление в группу
         try:
             await context.bot.send_message(
                 update.effective_chat.id,
@@ -319,13 +307,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 c = conn.cursor()
                 c.execute("INSERT INTO lotteries (name, price, total_tickets) VALUES (?, ?, ?)", (name, price, total))
                 lottery_id = c.lastrowid
-                # Генерируем номера
                 for i in range(1, total+1):
                     c.execute("INSERT INTO tickets (lottery_id, number, user_id, status) VALUES (?, ?, ?, 'free')", (lottery_id, i, 0))
                 conn.commit()
                 conn.close()
                 await update.message.reply_text(f"✅ Розыгрыш '{name}' создан!\nЦена: {price}₽\nВсего номерков: {total}")
-                # Очищаем состояние
                 del context.user_data['admin_action']
                 del context.user_data['new_lottery_name']
                 del context.user_data['new_lottery_price']
