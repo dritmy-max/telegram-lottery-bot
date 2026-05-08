@@ -661,3 +661,20 @@ def main():
 
 if __name__ == "__main__":
     main()
+from flask import Flask
+import threading
+
+# Создаем простой веб-сервер для Render
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Бот работает!"
+
+def run_web():
+    app.run(host='0.0.0.0', port=8000)
+
+# Запускаем бота и веб-сервер параллельно
+if __name__ == "__main__":
+    threading.Thread(target=run_web).start()
+    main()
