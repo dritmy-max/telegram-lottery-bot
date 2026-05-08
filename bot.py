@@ -1,9 +1,22 @@
-chat_member = context.bot.get_chat_member(chat_id, user_id)import os
+import os
 import logging
 import sqlite3
 import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+# --- Flask для Render ---
+from flask import Flask
+import threading
+
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Бот работает!"
+
+def run_web():
+    app_flask.run(host='0.0.0.0', port=8000)
 
 # --- Настройка логирования ---
 logging.basicConfig(
@@ -19,7 +32,6 @@ TOKEN = "8718532267:AAEq7afHk_Nuqjy3KeqI52KdzanQLQ1_iEI"
 DB_FILE = "lottery.db"
 
 def init_db():
-    """Создает таблицы, если их нет"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS lotteries
@@ -44,20 +56,15 @@ def init_db():
     logger.info("База данных инициализирована")
 
 def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Проверяет, является ли пользователь администратором группы"""
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     try:
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
         chat_member = context.bot.get_chat_member(chat_id, user_id)
         return chat_member.status in ['administrator', 'creator']
-    except Exception as e:
-        print(f"Ошибка проверки админа: {e}")
+    except:
         return False
 
-# --- Команды бота ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Главное меню"""
     keyboard = [
         [InlineKeyboardButton("🎫 Участвовать", callback_data='participate')],
         [InlineKeyboardButton("👤 Мои билеты", callback_data='my_tickets')]
@@ -68,7 +75,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Добро пожаловать в мясную лотерею!\nВыберите действие:", reply_markup=reply_markup)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на кнопки"""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -312,7 +318,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Извините, я не понимаю эту команду. Нажмите /start")
 
-# --- Запуск бота ---
+# --- Запуск бота с Flask для Render ---
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
@@ -321,6 +327,10 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
     logger.info("Бот запущен и готов к работе")
+    
+    # Запускаем веб-сервер в отдельном потоке
+    threading.Thread(target=run_web, daemon=True).start()
+    
     app.run_polling()
 
 if __name__ == "__main__":
